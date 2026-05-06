@@ -1,0 +1,17 @@
+backend: memoryos
+repo_path: MemoryOS/memoryos-pypi
+user_id_template: "longmemeval_{question_id}"
+assistant_id: longmemeval_assistant
+storage_path: runs/vectorstores/memoryos
+short_term_capacity: 10
+mid_term_capacity: 2000
+long_term_knowledge_capacity: 100
+retrieval_queue_capacity: 7
+mid_term_heat_threshold: 5.0
+mid_term_similarity_threshold: 0.6
+embedding_model: all-MiniLM-L6-v2
+force_mid_term_analysis_before_retrieve: true
+# MemoryOS local-source adapter is recommended for phase 1.
+# MemoryOS default top_k is 7 unless agent.top_k overrides it.
+# llm_model defaults to the unified agent.llm.model.
+

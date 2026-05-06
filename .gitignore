@@ -1,0 +1,90 @@
+# Local secrets and machine-specific configuration
+.env
+.env.*
+!.env.example
+*.local
+
+# Python environments and caches
+.venv/
+venv/
+env/
+ENV/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Editor and OS files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# HyperMemo experiment outputs
+runs/
+logs/
+*.log
+
+# Local memory/vector stores and generated databases
+vectorstores/
+**/vectorstores/
+**/.chroma/
+**/chroma/
+**/chromadb/
+*.sqlite
+*.sqlite3
+*.db
+*.db-shm
+*.db-wal
+
+# LongMemEval large datasets and generated outputs
+LongMemEval/data/*.json
+!LongMemEval/data/longmemeval_s_cleaned_smoke_1.json
+LongMemEval/data/.cache/
+LongMemEval/data/custom_history/
+LongMemEval/retrieval_logs/
+LongMemEval/generation_logs/
+LongMemEval/index_expansion_logs/
+LongMemEval/**/*.eval-results-*
+LongMemEval/**/*.log
+
+# Large paper/artifact files that can be fetched separately
+MemoryOS/Paper-MemoryOS.pdf
+
+# Node/JS project dependencies inside imported memory projects
+node_modules/
+**/node_modules/
+**/.next/
+**/.turbo/
+**/coverage/
+**/.nyc_output/
+**/pnpm-debug.log*
+**/npm-debug.log*
+**/yarn-debug.log*
+**/yarn-error.log*
+
+# Generated frontend/build artifacts in imported projects
+mem0/server/dashboard/.next/
+mem0/openmemory/ui/.next/
+mem0/vercel-ai-sdk/dist/
+mem0/openclaw/dist/
+mem0/mem0-ts/**/dist/
+
+# Package manager caches
+.pnpm-store/
+.npm/
+.yarn/cache/
+.yarn/unplugged/
+.yarn/build-state.yml
+.yarn/install-state.gz
+

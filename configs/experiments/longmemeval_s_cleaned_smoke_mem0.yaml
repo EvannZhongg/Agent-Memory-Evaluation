@@ -1,0 +1,10 @@
+experiment:
+  name: longmemeval_s_cleaned_smoke_mem0
+  dataset_path: LongMemEval/data/longmemeval_s_cleaned_smoke_1.json
+  run_dir: runs/longmemeval_s_cleaned_smoke_mem0
+
+agent:
+  llm_config_path: configs/llm/responses.yaml
+  top_k: 10
+  memory:
+    config_path: configs/memory/mem0.yaml

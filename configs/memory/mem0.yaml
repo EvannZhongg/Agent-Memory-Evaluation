@@ -1,0 +1,11 @@
+backend: mem0
+repo_path: mem0
+user_id_template: "longmemeval_{question_id}"
+collection_template: "longmemeval_{question_id}"
+infer: true
+threshold: 0.1
+rerank: false
+storage_path: runs/vectorstores/mem0
+# mem0 default top_k is 20 unless agent.top_k overrides it.
+# The adapter uses the unified LLM and embedding config by default.
+

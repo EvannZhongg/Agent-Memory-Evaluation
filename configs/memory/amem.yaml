@@ -1,0 +1,9 @@
+backend: amem
+repo_path: A-mem
+embedding_model: all-MiniLM-L6-v2
+llm_backend: openai
+evo_threshold: 100
+category: LongMemEvalSession
+# A-mem default top_k is 5 unless agent.top_k overrides it.
+# llm_model defaults to the unified agent.llm.model.
+
