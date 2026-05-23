@@ -91,6 +91,7 @@ benchmark adapter 只做数据集格式转换，不应包含 memory 策略：
 
 - 可以做：读取数据、标准化 session/turn/question/answer、调用 benchmark 官方 evaluator。
 - 不应做：摘要、检索、事实抽取、memory 写入策略、针对某个 backend 的特殊字段拼接。
+- 如果 evaluator / judge 会调用 LLM，应把 token 记为 `eval_llm_input_tokens`、`eval_llm_output_tokens`、`eval_total_tokens`；这些成本单独报告，不并入 memory backend 的 `agent_total_tokens`。
 
 memory backend 只做 memory 架构适配，不应包含 benchmark 私有逻辑。具体规范见 `docs/custom_memory_backend_guide.md`。
 

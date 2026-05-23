@@ -315,16 +315,163 @@ suite 级汇总：
 runs/<suite>_summary.json
 ```
 
-## 9. 开发规范
+## 9. Token 成本口径
 
-### 9.1 总体边界
+后续评估必须统一 token 成本口径。主结果除了 benchmark 指标外，还应报告总开销和均摊开销。
+
+### 9.1 统计目标
+
+统一统计以下 token：
+
+```text
+llm_input_tokens       # 所有 LLM prompt/input token
+llm_output_tokens      # 所有 LLM completion/output token
+embedding_input_tokens # 所有送入 embedding 模型的文本 token
+embedding_output_tokens# embedding 输出规模；如无法按 token 计，可记录 vector_count / dimension
+total_tokens           # llm_input + llm_output + embedding_input，必要时另列 embedding_output_units
+```
+
+按阶段拆分：
+
+```text
+build_*   # memory 构建阶段：抽取、总结、演化、写入前 embedding
+query_*   # memory 检索阶段：query rewrite、检索前 embedding、rerank
+reader_*  # 最终回答阶段：reader prompt 和 reader output
+eval_*    # benchmark evaluator / judge LLM；默认单独统计，不并入 agent memory 成本
+```
+
+构建开销和查询开销都必须单独计算：
+
+```text
+build_total_tokens        # build_llm_input + build_llm_output + build_embedding_input
+memory_query_total_tokens # query_llm_input + query_llm_output + query_embedding_input
+reader_total_tokens       # reader_llm_input + reader_llm_output
+query_total_tokens        # memory_query_total_tokens + reader_total_tokens
+agent_total_tokens        # build_total_tokens + query_total_tokens
+```
+
+其中 `memory_query_total_tokens` 只表示 memory 系统在回答前的检索/重写/rerank/embedding 成本；`query_total_tokens` 表示一次 benchmark 问答的完整查询侧成本，包含 memory query 和最终 reader LLM。embedding output 不并入 token 总和，单独用 `*_embedding_vector_count` / `*_embedding_dimension` 记录规模。
+
+建议最终输出字段：
+
+```text
+build_llm_input_tokens
+build_llm_output_tokens
+build_embedding_input_tokens
+build_embedding_vector_count
+build_total_tokens
+
+query_llm_input_tokens
+query_llm_output_tokens
+query_embedding_input_tokens
+query_embedding_vector_count
+memory_query_total_tokens
+
+reader_llm_input_tokens
+reader_llm_output_tokens
+reader_total_tokens
+
+query_total_tokens
+agent_total_tokens
+eval_llm_input_tokens
+eval_llm_output_tokens
+eval_total_tokens
+```
+
+其中：
+
+- `agent_total_tokens` 用于比较 memory 架构本身的端到端成本。
+- `build_total_tokens` 用于比较 memory 构建/写入成本。
+- `query_total_tokens` 用于比较回答一次问题时的检索和 reader 成本。
+- `eval_total_tokens` 用于记录 judge 成本，但不应影响 memory 方法对比。
+- 如果某个 backend 内部无法拿到真实 provider usage，使用统一 tokenizer 做 best-effort 估算，并在 `token_counter` / `token_usage_notes` 中标注。
+
+### 9.2 均摊指标
+
+每个 run 至少汇总：
+
+```text
+total_build_tokens
+total_memory_query_tokens
+total_reader_tokens
+total_query_tokens
+total_agent_tokens
+
+avg_build_tokens_per_sample
+avg_build_tokens_per_session
+avg_build_tokens_per_turn
+avg_query_tokens_per_sample
+avg_query_tokens_per_answer
+avg_agent_tokens_per_sample
+avg_agent_tokens_per_session
+avg_agent_tokens_per_turn
+avg_agent_tokens_per_answer
+
+total_llm_input_tokens
+total_llm_output_tokens
+total_embedding_input_tokens
+total_embedding_vector_count
+```
+
+定义：
+
+- `per_sample`：除以 benchmark sample 数。
+- `per_session`：除以所有写入的 session 数。
+- `per_turn`：除以所有写入的 turn 数。
+- `per_answer`：除以最终回答次数，通常等于 sample 数。
+- `avg_build_tokens_per_turn` 是衡量 memory 写入效率的核心字段。
+- `avg_query_tokens_per_answer` 是衡量回答阶段成本的核心字段。
+
+这些均摊字段用于回答：
+
+- 哪个 memory 方法总成本更低。
+- 哪个方法每轮对话写入成本更高。
+- 哪个方法把成本花在 build、memory query、reader 还是 evaluator。
+- 准确率提升是否值得额外 token 成本。
+
+### 9.3 当前实现状态
+
+当前 `TokenUsageTracker` 已有 best-effort 字段：
+
+```text
+build_input_tokens
+build_llm_prompt_tokens
+query_input_tokens
+query_llm_prompt_tokens
+retrieved_context_tokens
+reader_prompt_tokens
+build_tokens
+query_tokens
+total_tokens
+```
+
+这些字段主要统计输入文本和可捕获的内部 LLM prompt。后续需要补齐：
+
+- LLM output/completion token。
+- embedding input token。
+- embedding vector count / dimension。
+- build/query/reader 的 total 与 average 聚合字段。
+- evaluator/judge LLM token 单独统计。
+- `avg_*_per_sample/session/turn/answer` 汇总字段。
+
+实现建议：
+
+- 所有 backend adapter 在调用独立 memory 包前后记录 build/query 的输入、LLM prompt、LLM output、embedding 文本。
+- reader LLM client 优先读取 provider 返回的 usage；没有 usage 时用统一 tokenizer 估算。
+- embedding provider wrapper 记录每次 embedding 的输入文本 token、文本条数、vector 维度。
+- `token_usage.jsonl` 保存 sample 级明细，`token_usage_summary.json` 保存 build/query/reader/eval 的 totals 和 averages。
+- suite summary 中至少保留 `total_build_tokens`、`total_query_tokens`、`agent_total_tokens`、`avg_build_tokens_per_turn`、`avg_query_tokens_per_answer` 和 `avg_agent_tokens_per_sample`，方便横向比较。
+
+## 10. 开发规范
+
+### 10.1 总体边界
 
 - runner 只编排流程，不写 benchmark 特例，不写 memory 特例。
 - benchmark adapter 只处理数据集和 evaluator。
 - memory backend 只处理 memory 系统适配。
 - reader prompt 只在最终回答阶段使用，不干预各 memory 系统内部 prompt。
 
-### 9.2 新 benchmark
+### 10.2 新 benchmark
 
 新增文件：
 
@@ -349,7 +496,7 @@ evaluate
 docs/custom_benchmark_adapter_guide.md
 ```
 
-### 9.3 新 memory backend
+### 10.3 新 memory backend
 
 新增文件：
 
@@ -376,7 +523,7 @@ C-HyperMem/
 docs/custom_memory_backend_guide.md
 ```
 
-### 9.4 配置规范
+### 10.4 配置规范
 
 - API key 不写进 YAML，使用 `.env` 和 `*_env`。
 - `base_url` 和 `base_url_env` 都应优先支持。
@@ -384,7 +531,7 @@ docs/custom_memory_backend_guide.md
 - suite 内 inline config 可覆盖 `configs/memory/*.yaml`，用于小范围 ablation。
 - `config.resolved.yaml` 必须能复现实验配置。
 
-### 9.5 公平性规范
+### 10.5 公平性规范
 
 - backend 不得读取 gold answer、evidence label 或 question type 来增强检索。
 - 每个 `question_id` 必须隔离 memory namespace / collection / storage。
@@ -393,9 +540,9 @@ docs/custom_memory_backend_guide.md
 - native 主榜按 memory 方法原生粒度或 adapter 默认粒度构建 memory。
 - 方法原生能力和 controlled chunking ablation 分开报告。
 - controlled chunking suite 可以统一 `turn` / `pair` / `session` 粒度，但只能作为消融分析。
-- 报告结果时同时给出 accuracy/F1、token cost、retrieved context 大小和失败案例。
+- 报告结果时同时给出 accuracy/F1、LLM input/output token、embedding token、平均每轮成本、retrieved context 大小和失败案例。
 
-### 9.6 Git 与本地依赖
+### 10.6 Git 与本地依赖
 
 建议提交：
 
@@ -411,7 +558,7 @@ LongMemEval/data/longmemeval_s_cleaned_smoke_1.json
 
 LOCOMO 当前可随仓库提交和更新；如果后续体积膨胀，再迁移到外部数据下载流程。
 
-## 10. 推荐开发流程
+## 11. 推荐开发流程
 
 常规代码变更：
 
@@ -442,18 +589,18 @@ python -m agent_memory_eval run configs\suites\longmemeval_s_cleaned.yaml
 python -m agent_memory_eval run configs\suites\locomo.yaml
 ```
 
-## 11. 后续 Roadmap
+## 12. 后续 Roadmap
 
 优先级建议：
 
 1. 稳定 benchmark adapter 层：LongMemEval / LOCOMO 的输入、prediction、metrics 保持一致。
-2. 稳定 memory backend 层：所有 backend 输出 `MemoryItem`、debug、token usage。
+2. 稳定 memory backend 层：所有 backend 输出 `MemoryItem`、debug、统一 token usage。
 3. 增加 native suite 和 controlled chunking suite，避免公平性解释混淆。
 4. 为自研 memory 架构提供 thin adapter，并保持核心包独立开源。
-5. 增加结果分析脚本：按 question type、retrieval hit、token cost、失败原因聚合。
+5. 增加结果分析脚本：按 question type、retrieval hit、LLM/embedding token cost、失败原因聚合。
 6. 增加 smoke CI：至少 validate suite、导入 backend、跑 no_memory 小样本。
 
-## 12. 文档分工
+## 13. 文档分工
 
 ```text
 README.md

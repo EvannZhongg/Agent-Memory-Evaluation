@@ -425,7 +425,7 @@ def build_context(self, query: str, retrieved: list[MemoryItem]) -> str:
 
 ## 12. Token 和 Debug
 
-推荐记录：
+推荐记录所有可观测成本。当前 tracker 已支持的 best-effort 记录：
 
 ```python
 self.token_usage.record_build(...)
@@ -433,6 +433,39 @@ self.token_usage.record_memory_query(...)
 self.token_usage.record_build_llm_prompt(...)
 self.token_usage.record_query_llm_prompt(...)
 ```
+
+后续 backend adapter 应尽量补齐这些维度：
+
+```text
+build_llm_input_tokens
+build_llm_output_tokens
+build_embedding_input_tokens
+build_embedding_vector_count
+build_total_tokens
+
+query_llm_input_tokens
+query_llm_output_tokens
+query_embedding_input_tokens
+query_embedding_vector_count
+memory_query_total_tokens
+
+reader_llm_input_tokens
+reader_llm_output_tokens
+reader_total_tokens
+
+query_total_tokens
+agent_total_tokens
+```
+
+原则：
+
+- LLM input/output 优先使用 provider 返回的 usage；拿不到 usage 时用统一 tokenizer 估算。
+- embedding input 统计送入 embedding 模型的文本 token；embedding output 至少记录 vector 数量和维度。
+- 构建开销和查询开销必须分开算：`build_total_tokens` 表示写入/抽取/组织 memory 的成本，`query_total_tokens` 表示一次回答问题的 memory query + reader 成本。
+- `memory_query_total_tokens` 只统计 memory 检索、query rewrite、rerank、检索 embedding 等成本；`reader_total_tokens` 只统计最终回答 LLM。
+- `agent_total_tokens = build_total_tokens + query_total_tokens`，用于端到端比较。
+- benchmark evaluator / judge LLM 成本单独记录为 `eval_*`，不并入 memory backend 的 `agent_total_tokens`。
+- summary 中同时给出总成本和均摊成本，例如 `total_build_tokens`、`total_query_tokens`、`avg_build_tokens_per_turn`、`avg_query_tokens_per_answer`、`avg_agent_tokens_per_sample`、`avg_agent_tokens_per_turn`。
 
 runner 会写出：
 

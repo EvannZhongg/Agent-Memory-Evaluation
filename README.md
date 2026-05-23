@@ -34,7 +34,6 @@ runs/                   # 实验输出；不入库
 ```text
 C-HyperMem/                 # 自研 memory 架构，应作为独立仓库/包维护
 Memory-in-the-LLM-Era-main/ # 外部复现仓库，仅用于对照分析
-locomo/                     # LOCOMO 官方仓库/数据镜像，本地自备
 参考文献/                   # 论文笔记和本地资料
 runs/                       # 实验输出
 ```
@@ -269,20 +268,46 @@ evaluate(predictions_path, run_dir)
 
 只要 adapter 输出统一的 `BenchmarkSample.sessions/question/question_id`，现有 memory backend 和 agent runtime 都不用改。
 
-token 统计字段：
+token 统计采用统一口径，既报告总开销，也报告构建开销、查询开销和均摊开销：
 
 ```text
-build_input_tokens        # 送入 memory 构建阶段的原始文本 token
-build_llm_prompt_tokens   # 可捕获的 memory 内部 LLM prompt token
-build_tokens              # 构建总 token
-query_input_tokens        # memory 检索 query token
-query_llm_prompt_tokens   # 可捕获的检索阶段内部 LLM prompt token
-reader_prompt_tokens      # 最终 reader prompt token
-query_tokens              # 查询/回答总 token
-total_tokens              # build + query
+build_llm_input_tokens      # memory 构建阶段 LLM input/prompt
+build_llm_output_tokens     # memory 构建阶段 LLM output/completion
+build_embedding_input_tokens
+build_total_tokens          # 写入、抽取、总结、演化、写入前 embedding 的总 token
+
+query_llm_input_tokens      # memory query/rewrite/rerank LLM input
+query_llm_output_tokens     # memory query/rewrite/rerank LLM output
+query_embedding_input_tokens
+memory_query_total_tokens   # memory 检索侧总 token
+
+reader_llm_input_tokens     # 最终回答 LLM input
+reader_llm_output_tokens    # 最终回答 LLM output
+reader_total_tokens
+
+query_total_tokens          # memory_query_total_tokens + reader_total_tokens
+agent_total_tokens          # build_total_tokens + query_total_tokens
+
+eval_llm_input_tokens       # benchmark evaluator / judge LLM，单独统计
+eval_llm_output_tokens
+eval_total_tokens
 ```
 
-token 统计是框架侧的可比较口径，并 best-effort 捕获三套 memory 内部 LLM prompt。若某个库内部使用异步、子进程或绕过当前 LLM 方法，可能无法得到精确 billing usage。
+`token_usage_summary.json` 和 suite summary 应同时包含总量和均摊指标，例如：
+
+```text
+total_build_tokens
+total_memory_query_tokens
+total_reader_tokens
+total_query_tokens
+total_agent_tokens
+avg_build_tokens_per_turn
+avg_query_tokens_per_answer
+avg_agent_tokens_per_sample
+avg_agent_tokens_per_turn
+```
+
+token 统计是框架侧的可比较口径，并 best-effort 捕获三套 memory 内部 LLM prompt。若某个库内部使用异步、子进程或绕过当前 LLM 方法，可能无法得到精确 billing usage；这种情况需要在 `token_usage_notes` 中标注。
 
 ## 数据说明
 
@@ -342,6 +367,12 @@ LongMemEval/data/longmemeval_*.json  # smoke fixture 除外
 
 ```text
 https://github.com/EvannZhongg/Agent-Memory-Evaluation.git
+```
+
+项目克隆：
+```
+git clone https://github.com/EvannZhongg/Agent-Memory-Evaluation.git
+cd Agent-Memory-Evaluation
 ```
 
 如果本地已经初始化过 git，只需要：
