@@ -2,7 +2,13 @@
 
 本文档说明如何把自研 memory 算法接入 `agent_memory_eval`，并通过同一套 suite 同时跑 LongMemEval、LOCOMO 或后续新增 benchmark。
 
-核心思路：**自研 memory 算法应作为独立 Python 包开发和开源，`agent_memory_eval` 只保留一个很薄的评测 adapter**。benchmark adapter 会把不同数据集统一转换成 `MemorySession` / `MemoryTurn` / `BenchmarkSample`，HyperMemo adapter 只负责把这些结构翻译成你的独立 memory 包的 `add/search/reset` 等 API。
+核心思路：**自研 memory 算法应作为独立 Python 包开发和开源，`agent_memory_eval` 只保留一个很薄的评测 adapter**。benchmark adapter 会把不同数据集统一转换成 `MemorySession` / `MemoryTurn` / `BenchmarkSample`，`agent_memory_eval` backend adapter 只负责把这些结构翻译成你的独立 memory 包的 `add/search/reset` 等 API。
+
+如果你要接入的是新数据集或新 benchmark，而不是新 memory 架构，请看：
+
+```text
+docs/custom_benchmark_adapter_guide.md
+```
 
 推荐边界：
 
@@ -102,9 +108,9 @@ memory.add(messages, user_id="alice", metadata={"session_id": "S1"})
 results = memory.search("What does Alice prefer?", user_id="alice", top_k=5)
 ```
 
-`agent_memory_eval` 不应该依赖你的内部算法模块，只依赖这种稳定 API。这样别人使用 `your_memory` 时不需要安装或理解 HyperMemo。
+`agent_memory_eval` 不应该依赖你的内部算法模块，只依赖这种稳定 API。这样别人使用 `your_memory` 时不需要安装或理解 `agent_memory_eval`。
 
-## 4. HyperMemo Adapter 实现
+## 4. agent_memory_eval Adapter 实现
 
 所有 backend 继承：
 
@@ -489,7 +495,7 @@ runs/<suite>_<backend>/
 M1：最小可跑
 
 - 独立包实现 `Memory.from_config/add/search/reset`
-- HyperMemo adapter 实现 `reset/ingest_session/retrieve`
+- `agent_memory_eval` adapter 实现 `reset/ingest_session/retrieve`
 - 跑通 `longmemeval_smoke`
 
 M2：真实索引
