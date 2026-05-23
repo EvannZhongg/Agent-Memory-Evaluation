@@ -1,0 +1,25 @@
+suite:
+  name: locomo
+  benchmark:
+    name: locomo
+    dataset_path: locomo/data/locomo10.json
+    evaluation:
+      enabled: false
+      prediction_key: hypermemo_prediction
+
+  agent:
+    llm_config_path: configs/llm/responses.yaml
+    top_k: 10
+
+  backends:
+    - name: no_memory
+      config_path: configs/memory/no_memory.yaml
+    - name: mem0
+      config_path: configs/memory/mem0.yaml
+    - name: amem
+      config_path: configs/memory/amem.yaml
+    - name: memoryos
+      config_path: configs/memory/memoryos.yaml
+
+  run:
+    run_dir_template: runs/{suite}_{backend}

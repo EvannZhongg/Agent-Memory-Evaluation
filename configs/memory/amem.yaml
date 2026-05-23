@@ -1,9 +1,9 @@
 backend: amem
 repo_path: A-mem
+ingest_granularity: turn  # native benchmark default; optional: session, pair
 embedding_model: all-MiniLM-L6-v2
 llm_backend: openai
 evo_threshold: 100
-category: LongMemEvalSession
+category: A-MemNote
 # A-mem default top_k is 5 unless agent.top_k overrides it.
 # llm_model defaults to the unified agent.llm.model.
-

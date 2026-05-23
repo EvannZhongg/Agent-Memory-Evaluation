@@ -1,13 +1,27 @@
 param(
-    [string]$Config = "configs/experiments/longmemeval_oracle_no_memory.yaml",
-    [int]$Limit = 1,
-    [switch]$DryRun
+    [string]$Suite = "configs/suites/longmemeval_smoke.yaml",
+    [string[]]$Backend = @(),
+    [Nullable[int]]$Limit = $null,
+    [switch]$NoEval,
+    [switch]$DryRun,
+    [switch]$Quiet
 )
 
-$argsList = @("-m", "agent_memory_eval", "run", $Config, "--limit", "$Limit")
+$argsList = @("-m", "agent_memory_eval", "run", $Suite)
+foreach ($name in $Backend) {
+    $argsList += @("--backend", $name)
+}
+if ($null -ne $Limit) {
+    $argsList += @("--limit", "$Limit")
+}
+if ($NoEval) {
+    $argsList += "--no-eval"
+}
 if ($DryRun) {
     $argsList += "--dry-run"
 }
+if ($Quiet) {
+    $argsList += "--quiet"
+}
 
 python @argsList
-

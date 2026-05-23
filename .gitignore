@@ -35,6 +35,24 @@ runs/
 logs/
 *.log
 
+# Local/private memory implementations and notes
+# C-HyperMem is developed as a standalone memory package; keep this eval repo as a benchmark harness.
+C-HyperMem/
+参考文献/
+
+# External comparison repos and benchmark mirrors kept locally for analysis.
+# Do not vendor these unless you intentionally want to track a fixed fork.
+Memory-in-the-LLM-Era-main/
+# locomo/
+
+# Optional local clones. These directories are currently tracked in this repo,
+# so they are not ignored here. If you later externalize them, uncomment the
+# following rules after `git rm --cached -r <dir>`.
+# mem0/
+# A-mem/
+# MemoryOS/
+# LongMemEval/
+
 # Local memory/vector stores and generated databases
 vectorstores/
 **/vectorstores/
@@ -57,6 +75,28 @@ LongMemEval/generation_logs/
 LongMemEval/index_expansion_logs/
 LongMemEval/**/*.eval-results-*
 LongMemEval/**/*.log
+
+# LOCOMO full dataset mirror and generated artifacts.
+# Keep only configs pointing to local paths; users download/copy data separately.
+locomo/data/
+locomo/**/*.json
+locomo/**/*.jsonl
+locomo/**/*.pkl
+locomo/**/__pycache__/
+locomo/static/
+
+# Imported memory project generated artifacts
+A-mem/**/.chromadb/
+A-mem/**/chroma/
+A-mem/**/__pycache__/
+MemoryOS/**/data/
+MemoryOS/**/user_data/
+MemoryOS/**/assistant_data/
+MemoryOS/**/storage/
+MemoryOS/**/__pycache__/
+mem0/**/.chroma/
+mem0/**/chroma/
+mem0/**/__pycache__/
 
 # Large paper/artifact files that can be fetched separately
 MemoryOS/Paper-MemoryOS.pdf
@@ -87,4 +127,3 @@ mem0/mem0-ts/**/dist/
 .yarn/unplugged/
 .yarn/build-state.yml
 .yarn/install-state.gz
-

@@ -9,20 +9,28 @@ import yaml
 
 from .agent import AgentRuntime
 from .backends import create_backend
+from .benchmarks import create_benchmark
 from .config import load_experiment_config, resolve_path
 from .llm import OpenAIResponsesClient
-from .longmemeval import load_dataset
 
 
 def validate_config(config: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     root = Path(config["_meta"]["root"])
     experiment = config.get("experiment", {})
-    dataset_path = experiment.get("dataset_path")
-    if not dataset_path:
-        errors.append("experiment.dataset_path is required")
-    elif not resolve_path(dataset_path, root).exists():
-        errors.append(f"Dataset not found: {resolve_path(dataset_path, root)}")
+    try:
+        benchmark_config = _benchmark_config(experiment)
+    except ValueError as exc:
+        benchmark_config = {}
+        errors.append(str(exc))
+    if not benchmark_config.get("dataset_path"):
+        errors.append("experiment.benchmark.dataset_path is required")
+    else:
+        try:
+            benchmark = create_benchmark(benchmark_config, root)
+            errors.extend(benchmark.validate())
+        except ValueError as exc:
+            errors.append(str(exc))
 
     agent = config.get("agent", {})
     llm = agent.get("llm", {})
@@ -35,8 +43,24 @@ def validate_config(config: dict[str, Any]) -> list[str]:
     return errors
 
 
-def run_experiment(config_path: str | Path, *, limit: int | None = None, dry_run: bool = False) -> Path:
+def run_experiment(
+    config_path: str | Path,
+    *,
+    limit: int | None = None,
+    dry_run: bool = False,
+    progress: bool = True,
+) -> Path:
     config = load_experiment_config(config_path)
+    return run_resolved_experiment(config, limit=limit, dry_run=dry_run, progress=progress)
+
+
+def run_resolved_experiment(
+    config: dict[str, Any],
+    *,
+    limit: int | None = None,
+    dry_run: bool = False,
+    progress: bool = True,
+) -> Path:
     errors = validate_config(config)
     if errors:
         raise ValueError("\n".join(errors))
@@ -48,9 +72,17 @@ def run_experiment(config_path: str | Path, *, limit: int | None = None, dry_run
     run_id = experiment.get("run_id") or _default_run_id(experiment.get("name", "experiment"))
     run_dir = resolve_path(experiment.get("run_dir", f"runs/{run_id}"), root)
     run_dir.mkdir(parents=True, exist_ok=True)
+    progress = progress and bool(experiment.get("progress", True))
 
-    dataset_path = resolve_path(experiment["dataset_path"], root)
-    samples = load_dataset(dataset_path, limit=limit or experiment.get("limit"))
+    benchmark = create_benchmark(_benchmark_config(experiment), root)
+    samples = benchmark.load_samples(limit=limit or experiment.get("limit"))
+    if progress:
+        print(
+            f"[run] benchmark={benchmark.benchmark_name} "
+            f"backend={config['agent']['memory'].get('backend')} "
+            f"samples={len(samples)} dataset={benchmark.config.get('dataset_path')}",
+            flush=True,
+        )
 
     resolved_config_path = run_dir / "config.resolved.yaml"
     resolved_config_path.write_text(yaml.safe_dump(config, sort_keys=False, allow_unicode=True), encoding="utf-8")
@@ -81,13 +113,38 @@ def run_experiment(config_path: str | Path, *, limit: int | None = None, dry_run
     ) as ret_f, ingest_trace_path.open("w", encoding="utf-8") as trace_f, backend_debug_path.open(
         "w", encoding="utf-8"
     ) as debug_f, token_usage_path.open("w", encoding="utf-8") as token_f:
-        for sample in samples:
+        for sample_index, sample in enumerate(samples, start=1):
+            if progress:
+                print(
+                    f"[sample {sample_index}/{len(samples)}] reset question_id={sample.question_id} "
+                    f"sessions={len(sample.sessions)}",
+                    flush=True,
+                )
             backend.reset(sample.question_id)
-            for session in sample.sessions:
+            for session_index, session in enumerate(sample.sessions, start=1):
+                if progress:
+                    print(
+                        f"[sample {sample_index}/{len(samples)}] ingest "
+                        f"{session_index}/{len(sample.sessions)} "
+                        f"session_id={session.session_id} turns={len(session.turns)}",
+                        flush=True,
+                    )
+                _write_jsonl(
+                    trace_f,
+                    {
+                        "event": "ingest_started",
+                        "question_id": sample.question_id,
+                        "session_id": session.session_id,
+                        "date": session.date,
+                        "turn_count": len(session.turns),
+                        "backend": backend.backend_name,
+                    },
+                )
                 backend.ingest_session(session)
                 _write_jsonl(
                     trace_f,
                     {
+                        "event": "ingest_completed",
                         "question_id": sample.question_id,
                         "session_id": session.session_id,
                         "date": session.date,
@@ -96,8 +153,10 @@ def run_experiment(config_path: str | Path, *, limit: int | None = None, dry_run
                     },
                 )
 
+            if progress:
+                print(f"[sample {sample_index}/{len(samples)}] retrieve+answer", flush=True)
             answer, retrieved, memory_context = agent.answer(sample.question)
-            _write_jsonl(pred_f, {"question_id": sample.question_id, "hypothesis": answer})
+            _write_jsonl(pred_f, benchmark.prediction_record(sample, answer))
             _write_jsonl(
                 ret_f,
                 {
@@ -134,6 +193,13 @@ def run_experiment(config_path: str | Path, *, limit: int | None = None, dry_run
             token_summaries.append(token_usage)
             _write_jsonl(token_f, token_usage)
             backend.close()
+            if progress:
+                print(
+                    f"[sample {sample_index}/{len(samples)}] completed "
+                    f"retrieved={len(retrieved)} build_tokens={token_usage.get('build_tokens')} "
+                    f"query_tokens={token_usage.get('query_tokens')}",
+                    flush=True,
+                )
 
     token_usage_summary = _summarize_token_usage(token_summaries)
     (run_dir / "token_usage_summary.json").write_text(
@@ -141,12 +207,11 @@ def run_experiment(config_path: str | Path, *, limit: int | None = None, dry_run
         encoding="utf-8",
     )
 
-    metrics_stub = {
-        "status": "not_evaluated",
-        "message": "Evaluation interface is reserved. Run LongMemEval evaluator later.",
-        "predictions_path": str(predictions_path),
-        "dataset_path": str(dataset_path),
-    }
+    metrics_stub = benchmark.evaluate(
+        predictions_path=predictions_path,
+        run_dir=run_dir,
+        progress=progress,
+    )
     (run_dir / "metrics.json").write_text(
         json.dumps(metrics_stub, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -193,3 +258,10 @@ def _default_run_id(name: str) -> str:
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     safe_name = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in name)
     return f"{safe_name}_{stamp}"
+
+
+def _benchmark_config(experiment: dict[str, Any]) -> dict[str, Any]:
+    benchmark = dict(experiment.get("benchmark") or {})
+    if "name" not in benchmark:
+        raise ValueError("experiment.benchmark.name is required")
+    return benchmark

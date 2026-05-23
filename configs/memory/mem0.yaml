@@ -6,6 +6,9 @@ infer: true
 threshold: 0.1
 rerank: false
 storage_path: runs/vectorstores/mem0
+# Optional override for memory extraction/update LLMs that use Chat Completions.
+# If omitted, the adapter converts known Responses-compatible base_url values
+# such as DashScope /api/v2/apps/protocols/compatible-mode/v1 to /compatible-mode/v1.
+# chat_base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
 # mem0 default top_k is 20 unless agent.top_k overrides it.
 # The adapter uses the unified LLM and embedding config by default.
-

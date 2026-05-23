@@ -62,10 +62,10 @@ if __name__ == '__main__':
     if metric_model_source == 'openai':
         openai.organization = os.getenv('OPENAI_ORGANIZATION')
         openai_api_key = os.getenv('OPENAI_API_KEY')
-        openai_api_base = None
+        openai_api_base = os.getenv('OPENAI_BASE_URL') or os.getenv('OPENAI_API_BASE')
     else:
         openai_api_key = "EMPTY"
-        openai_api_base = "http://localhost:8001/v1"
+        openai_api_base = os.getenv('OPENAI_BASE_URL') or os.getenv('OPENAI_API_BASE') or "http://localhost:8001/v1"
     
     metric_client = OpenAI(
         api_key=openai_api_key,

@@ -1,0 +1,27 @@
+suite:
+  name: longmemeval_s_cleaned
+  benchmark:
+    name: longmemeval
+    dataset_path: LongMemEval/data/longmemeval_s_cleaned.json
+    evaluation:
+      enabled: true
+      metric_model: gpt-4o
+      api_key_env: OPENAI_API_KEY
+      base_url_env: OPENAI_BASE_URL
+
+  agent:
+    llm_config_path: configs/llm/responses.yaml
+    top_k: 10
+
+  backends:
+    - name: no_memory
+      config_path: configs/memory/no_memory.yaml
+    - name: mem0
+      config_path: configs/memory/mem0.yaml
+    - name: amem
+      config_path: configs/memory/amem.yaml
+    - name: memoryos
+      config_path: configs/memory/memoryos.yaml
+
+  run:
+    run_dir_template: runs/{suite}_{backend}

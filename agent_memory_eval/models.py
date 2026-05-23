@@ -30,7 +30,7 @@ class MemoryItem:
 
 
 @dataclass
-class LongMemEvalSample:
+class BenchmarkSample:
     question_id: str
     question_type: str
     question: str
@@ -38,4 +38,7 @@ class LongMemEvalSample:
     question_date: str | None
     sessions: list[MemorySession]
     raw: dict[str, Any] = field(default_factory=dict)
+    benchmark: str = "unknown"
 
+
+LongMemEvalSample = BenchmarkSample

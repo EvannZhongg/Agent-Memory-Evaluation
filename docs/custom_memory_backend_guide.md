@@ -1,28 +1,64 @@
 # 自研 Memory Backend 接入指南
 
-本文档用于指导后续将自研 memory 算法接入 HyperMemo 评测框架。目标是让新算法可以和 `mem0`、`A-mem`、`MemoryOS` 一样，通过配置切换，并使用同一套 LongMemEval runner 进行 smoke test 和后续评测。
+本文档说明如何把自研 memory 算法接入 `agent_memory_eval`，并通过同一套 suite 同时跑 LongMemEval、LOCOMO 或后续新增 benchmark。
 
-## 1. 接入原则
+核心思路：**自研 memory 算法应作为独立 Python 包开发和开源，`agent_memory_eval` 只保留一个很薄的评测 adapter**。benchmark adapter 会把不同数据集统一转换成 `MemorySession` / `MemoryTurn` / `BenchmarkSample`，HyperMemo adapter 只负责把这些结构翻译成你的独立 memory 包的 `add/search/reset` 等 API。
 
-自研 memory 算法应作为新的 **Memory Backend Adapter** 接入。
+推荐边界：
 
-不要修改以下模块：
+```text
+your_memory/                 # 独立开源项目，别人可以单独 pip install 使用
+  your_memory/
+    memory.py
+    schema.py
+    config.py
+    ...
 
-- `agent_memory_eval/runner.py`
-- `agent_memory_eval/longmemeval.py`
-- `agent_memory_eval/agent.py`
-- LongMemEval 原始数据和官方评测代码
+agent_memory_eval/  # 你的本地测评框架
+  backends/
+    your_memory_backend.py    # thin adapter，只做格式转换和评测日志
+```
 
-应新增或修改：
+## 1. 需要改哪些文件
 
-- `agent_memory_eval/backends/<your_backend>_backend.py`
-- `agent_memory_eval/backends/factory.py`
-- `configs/memory/<your_backend>.yaml`
-- `configs/experiments/longmemeval_oracle_<your_backend>.yaml`
+在 `agent_memory_eval` 中新增或修改：
 
-## 2. 框架调用生命周期
+```text
+agent_memory_eval/backends/<your_backend>_backend.py
+agent_memory_eval/backends/factory.py
+configs/memory/<your_backend>.yaml
+configs/suites/*.yaml
+```
 
-LongMemEval 中每个样本的执行顺序如下：
+在独立 memory 项目中维护：
+
+```text
+your_memory/
+  your_memory/
+    memory.py
+    schema.py
+    config.py
+    llms/
+    embeddings/
+    stores/
+    algorithms/
+  pyproject.toml
+  README.md
+```
+
+不要修改：
+
+```text
+agent_memory_eval/runner.py
+agent_memory_eval/suite_runner.py
+agent_memory_eval/agent.py
+agent_memory_eval/benchmarks/*.py
+LongMemEval/ 或 locomo/ 原始代码
+```
+
+## 2. 调用生命周期
+
+每个 benchmark 样本都会走同一个流程：
 
 ```text
 backend.reset(question_id)
@@ -34,20 +70,49 @@ retrieved = backend.retrieve(question, top_k)
 memory_context = backend.build_context(question, retrieved)
 answer = reader_llm(memory_context, question)
 
-write predictions / retrieved_memories / debug
+write predictions / retrieved_memories / debug / metrics
 ```
 
-你的 memory 算法只需要实现 `reset`、`ingest_session`、`retrieve`，必要时重写 `build_context`。
+你的 backend 最少实现：
 
-## 3. 必须实现的接口
+```text
+reset
+ingest_session
+retrieve
+```
 
-所有 backend 都继承：
+必要时重写：
+
+```text
+build_context
+get_debug_info
+close
+```
+
+## 3. 推荐对外 API
+
+独立 memory 包建议暴露一个稳定主入口，例如：
+
+```python
+from your_memory import Memory
+
+memory = Memory.from_config("configs/default.yaml")
+memory.reset(namespace="alice")
+memory.add(messages, user_id="alice", metadata={"session_id": "S1"})
+results = memory.search("What does Alice prefer?", user_id="alice", top_k=5)
+```
+
+`agent_memory_eval` 不应该依赖你的内部算法模块，只依赖这种稳定 API。这样别人使用 `your_memory` 时不需要安装或理解 HyperMemo。
+
+## 4. HyperMemo Adapter 实现
+
+所有 backend 继承：
 
 ```python
 from agent_memory_eval.backends.base import MemoryBackend
 ```
 
-最小实现：
+下面示例展示 thin adapter 的形态：真实算法在 `your_memory` 包里，adapter 只做转换。
 
 ```python
 from __future__ import annotations
@@ -63,22 +128,32 @@ class MyMemoryBackend(MemoryBackend):
     default_top_k = 10
 
     def __init__(self, config: dict[str, Any], llm_config: dict[str, Any]):
+        super().__init__()
+        from your_memory import Memory
+
         self.config = config
         self.llm_config = llm_config
         self.sample_id: str | None = None
-        self.store = None
+        self.memory = Memory.from_config(config)
 
     def reset(self, sample_id: str) -> None:
+        super().reset(sample_id)
         self.sample_id = sample_id
-        self.store = {}
+        self.namespace = _safe_namespace(f"{self.backend_name}_{sample_id}")
+        self.memory.reset(namespace=self.namespace)
 
     def ingest_session(self, session: MemorySession) -> None:
         text = session_to_text(session)
-        self.store[session.session_id] = {
-            "text": text,
-            "date": session.date,
-            "metadata": session.metadata,
-        }
+        self.token_usage.record_build(
+            text,
+            event="my_memory.ingest_session",
+            metadata={"session_id": session.session_id, "turn_count": len(session.turns)},
+        )
+        self.memory.add(
+            text,
+            namespace=self.namespace,
+            metadata={"session_id": session.session_id, "date": session.date, **session.metadata},
+        )
 
     def retrieve(
         self,
@@ -87,65 +162,45 @@ class MyMemoryBackend(MemoryBackend):
         metadata: dict[str, Any] | None = None,
     ) -> list[MemoryItem]:
         k = top_k if top_k is not None else self.default_top_k
-        results = []
-        for session_id, payload in list(self.store.items())[:k]:
-            results.append(
+        self.token_usage.record_memory_query(
+            query,
+            event="my_memory.retrieve",
+            metadata={"top_k": k},
+        )
+        results = self.memory.search(query, namespace=self.namespace, top_k=k)
+        items: list[MemoryItem] = []
+        for idx, result in enumerate(results):
+            items.append(
                 MemoryItem(
-                    id=session_id,
-                    content=payload["text"],
-                    score=None,
-                    source_session_id=session_id,
-                    metadata=payload,
+                    id=str(result.get("id", f"my_memory_{idx}")),
+                    content=str(result.get("content", "")),
+                    score=_float_or_none(result.get("score")),
+                    source_session_id=(result.get("metadata") or {}).get("session_id"),
+                    metadata=result,
                 )
             )
-        return results
+        return items
+
+    def get_debug_info(self) -> dict[str, Any]:
+        return {
+            "namespace": self.namespace,
+            "sample_id": self.sample_id,
+            "stats": self.memory.stats(namespace=self.namespace),
+        }
+
+
+def _safe_namespace(value: str) -> str:
+    return "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in value)
+
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 ```
 
-## 4. 数据结构说明
-
-### 4.1 MemorySession
-
-`ingest_session` 收到的是统一格式：
-
-```python
-@dataclass
-class MemorySession:
-    session_id: str
-    date: str | None
-    turns: list[MemoryTurn]
-    metadata: dict
-```
-
-LongMemEval 的 `haystack_sessions` 已经被转换为 `MemorySession`，并按照时间顺序注入。
-
-### 4.2 MemoryTurn
-
-```python
-@dataclass
-class MemoryTurn:
-    role: str
-    content: str
-    timestamp: str | None
-    metadata: dict
-```
-
-通常 `role` 为 `user` 或 `assistant`。
-
-### 4.3 MemoryItem
-
-`retrieve` 需要返回：
-
-```python
-@dataclass
-class MemoryItem:
-    id: str
-    content: str
-    score: float | None
-    source_session_id: str | None
-    metadata: dict
-```
-
-`content` 会进入最终 reader LLM 的 memory context，因此应是可读的、对回答有帮助的文本。
+如果你的独立包当前还没有稳定 API，可以先在 adapter 中写很薄的一层兼容代码，但不要把核心算法长期留在 `agent_memory_eval/backends` 里。
 
 ## 5. 注册 Backend
 
@@ -172,6 +227,7 @@ configs/memory/my_memory.yaml
 
 ```yaml
 backend: my_memory
+package_path: ../your_memory
 storage_path: runs/vectorstores/my_memory
 default_top_k: 10
 index:
@@ -180,68 +236,121 @@ index:
   use_embedding: true
 ```
 
-建议把算法超参数全部放在这里，不要写死在代码中。
+建议：
 
-## 7. 实验配置文件
+- 算法超参数放在 YAML，不要写死在代码里。
+- 持久化路径放 `runs/` 下，避免污染源码目录。
+- key 放 `.env`，不要写进 YAML。
+- 如果独立包尚未安装，可以在 adapter 里读取 `package_path` 并临时加入 `sys.path`；正式发布后建议改为 `pip install -e ../your_memory`。
 
-新增：
+## 7. 加入 Suite
 
-```text
-configs/experiments/longmemeval_oracle_my_memory.yaml
-```
-
-示例：
-
-```yaml
-experiment:
-  name: longmemeval_oracle_my_memory
-  dataset_path: LongMemEval/data/longmemeval_oracle.json
-  run_dir: runs/longmemeval_oracle_my_memory
-  limit: 1
-
-agent:
-  llm_config_path: configs/llm/responses.yaml
-  memory:
-    config_path: configs/memory/my_memory.yaml
-```
-
-如果想统一覆盖 top_k：
+把 backend 加到要对比的 suite：
 
 ```yaml
-agent:
-  top_k: 10
+suite:
+  backends:
+    - name: my_memory
+      config_path: configs/memory/my_memory.yaml
 ```
 
-## 8. 使用 LLM 和 Embedding
-
-统一 LLM 配置位于：
+例如同时加入：
 
 ```text
-configs/llm/responses.yaml
+configs/suites/longmemeval_smoke.yaml
+configs/suites/longmemeval_s_cleaned.yaml
+configs/suites/locomo.yaml
 ```
 
-adapter 初始化时会收到：
+统一覆盖 `top_k`：
+
+```yaml
+suite:
+  agent:
+    top_k: 10
+```
+
+只对某个 backend 覆盖参数：
+
+```yaml
+suite:
+  backends:
+    - name: my_memory
+      config_path: configs/memory/my_memory.yaml
+      default_top_k: 20
+      index:
+        use_bm25: false
+```
+
+inline 参数会覆盖 `configs/memory/my_memory.yaml` 中的同名字段。
+
+## 8. 输入数据结构
+
+### MemorySession
 
 ```python
-def __init__(self, config: dict[str, Any], llm_config: dict[str, Any]):
-    ...
+@dataclass
+class MemorySession:
+    session_id: str
+    date: str | None
+    turns: list[MemoryTurn]
+    metadata: dict
 ```
 
-其中：
+### MemoryTurn
 
-- `config`：来自 `configs/memory/my_memory.yaml`
-- `llm_config`：来自 `configs/llm/responses.yaml`
+```python
+@dataclass
+class MemoryTurn:
+    role: str
+    content: str
+    timestamp: str | None
+    metadata: dict
+```
 
-如需读取主 LLM key：
+不同 benchmark 的细节会被 adapter 放进 `metadata`。例如：
+
+- LongMemEval turn metadata 包含 `source_session_id`
+- LOCOMO turn metadata 包含 `speaker`、`dia_id`、`source_session_id`
+
+### MemoryItem
+
+`retrieve` 必须返回：
+
+```python
+@dataclass
+class MemoryItem:
+    id: str
+    content: str
+    score: float | None
+    source_session_id: str | None
+    metadata: dict
+```
+
+`content` 会进入最终 reader prompt，应尽量简洁、可读、和问题相关。
+
+## 9. 使用 LLM 和 Embedding
+
+suite 里的：
+
+```yaml
+agent:
+  llm_config_path: configs/llm/responses.yaml
+```
+
+会加载 reader LLM 配置，并传给 backend 的 `__init__(config, llm_config)`。
+
+读取主 LLM：
 
 ```python
 from ..config import env_value
 
 llm_api_key = env_value(llm_config.get("api_key_env", "LLM_API_KEY"))
 llm_base_url = llm_config.get("base_url")
+llm_model = llm_config.get("model")
 ```
 
-如需读取 embedding key：
+读取 embedding：
 
 ```python
 embedding_config = llm_config.get("embedding", {})
@@ -250,112 +359,147 @@ embedding_base_url = embedding_config.get("base_url")
 embedding_model = embedding_config.get("model")
 ```
 
-注意：
+如果你的算法需要单独的 extraction LLM，可以放在 `configs/memory/my_memory.yaml`：
 
-- 第一阶段 reader LLM 和 backend extraction LLM 默认共用主 LLM。
-- 如果你的算法需要单独 extraction LLM，可先在 `configs/memory/my_memory.yaml` 中加字段，后续再扩展通用配置规范。
+```yaml
+extraction_llm:
+  model: qwen3.6-plus
+  api_key_env: LLM_API_KEY
+  base_url: https://...
+```
 
-## 9. Namespace 和隔离
+## 10. 样本隔离
 
-每个 LongMemEval 样本都应隔离 memory 状态。
+每个 `question_id` 必须隔离 memory 状态。
 
-推荐做法：
+推荐：
 
 ```python
 def reset(self, sample_id: str) -> None:
+    super().reset(sample_id)
     self.sample_id = sample_id
-    self.namespace = f"longmemeval_{sample_id}"
+    self.namespace = f"{self.backend_name}_{sample_id}"
 ```
 
-如果使用持久化存储，建议：
+如果使用持久化 vector store：
 
-- 每个 `question_id` 使用独立 collection / namespace。
-- 或每次 `reset` 清理当前 namespace。
-- 不要让不同样本共享 memory，否则评测会污染。
+- 每个样本使用独立 collection / namespace。
+- 或 `reset` 时清理当前 namespace。
+- 不要让不同样本共享 memory，否则会信息泄漏。
 
-## 10. build_context 的选择
-
-默认 `MemoryBackend.build_context` 会把 `MemoryItem` 格式化为：
+注意 LOCOMO 的 `question_id` 形如：
 
 ```text
-[1 source=session_x score=0.8123] memory content
-[2 source=session_y] memory content
+conv-26::qa_0
 ```
 
-如果你的 memory 有结构化内容，例如 profile、episodic memory、semantic memory、graph links，可以重写：
+如果底层数据库不支持 `:`，需要在 namespace 中做安全转义。
+
+## 11. build_context
+
+默认格式：
+
+```text
+[1 source=S1 score=0.8123] memory content
+[2 source=S2] memory content
+```
+
+如果你的 memory 有结构化内容，可以重写：
 
 ```python
 def build_context(self, query: str, retrieved: list[MemoryItem]) -> str:
     ...
 ```
 
-建议输出保持简洁，避免把过多无关内容塞给 reader LLM。
+建议：
 
-## 11. Debug 输出
+- 控制长度，避免把无关内容塞给 reader。
+- 保留 source/session 信息，便于 debug。
+- 对 profile / episodic / semantic / graph memory 分区展示。
 
-可选实现：
+## 12. Token 和 Debug
+
+推荐记录：
+
+```python
+self.token_usage.record_build(...)
+self.token_usage.record_memory_query(...)
+self.token_usage.record_build_llm_prompt(...)
+self.token_usage.record_query_llm_prompt(...)
+```
+
+runner 会写出：
+
+```text
+token_usage.jsonl
+token_usage_summary.json
+backend_debug.jsonl
+```
+
+`get_debug_info` 可返回：
 
 ```python
 def get_debug_info(self) -> dict[str, Any]:
     return {
-        "memory_count": len(self.store),
+        "memory_count": self.memory.count(namespace=self.namespace),
         "namespace": self.namespace,
     }
 ```
 
-runner 会写入：
+## 13. Smoke Test
 
-```text
-backend_debug.jsonl
-```
-
-这对分析不同 memory 算法很重要。
-
-## 12. Smoke Test 流程
-
-开发一个新 backend 后，建议按顺序执行：
+开发一个新 backend 后，建议按顺序：
 
 ```powershell
-python -m agent_memory_eval validate configs/experiments/longmemeval_oracle_my_memory.yaml
-python -m agent_memory_eval run configs/experiments/longmemeval_oracle_my_memory.yaml --limit 1 --dry-run
-python -m agent_memory_eval run configs/experiments/longmemeval_oracle_my_memory.yaml --limit 1
+python -m agent_memory_eval validate configs\suites\longmemeval_smoke.yaml --backend my_memory
+python -m agent_memory_eval run configs\suites\longmemeval_smoke.yaml --backend my_memory --dry-run
+python -m agent_memory_eval run configs\suites\longmemeval_smoke.yaml --backend my_memory --limit 1 --no-eval
 ```
 
-检查输出：
+再跑 LOCOMO 小样本：
+
+```powershell
+python -m agent_memory_eval validate configs\suites\locomo.yaml --backend my_memory
+python -m agent_memory_eval run configs\suites\locomo.yaml --backend my_memory --limit 5
+```
+
+检查：
 
 ```text
-runs/longmemeval_oracle_my_memory/
+runs/<suite>_<backend>/
+  config.resolved.yaml
   predictions.jsonl
   retrieved_memories.jsonl
   ingest_trace.jsonl
   backend_debug.jsonl
+  token_usage.jsonl
+  token_usage_summary.json
   metrics.json
 ```
 
-重点检查：
+重点看：
 
 - `retrieved_memories.jsonl` 是否有结果。
-- `source_session_id` 是否能追溯到 LongMemEval session。
 - `memory_context` 是否可读。
-- `predictions.jsonl` 是否为合法 JSONL。
+- `source_session_id` 是否能追溯。
+- `metrics.json` 是否 evaluated / skipped 符合预期。
 
-## 13. 推荐开发里程碑
+## 14. 推荐开发里程碑
 
-### M1: 最小可跑版本
+M1：最小可跑
 
-- 实现 `reset`
-- 实现 `ingest_session`
-- 实现简单 `retrieve`
-- 跑通 `longmemeval_oracle` 单样本
+- 独立包实现 `Memory.from_config/add/search/reset`
+- HyperMemo adapter 实现 `reset/ingest_session/retrieve`
+- 跑通 `longmemeval_smoke`
 
-### M2: 加入真实索引
+M2：真实索引
 
-- 增加 embedding 或 keyword index
-- 支持 top_k
+- 加 embedding / keyword / hybrid index
+- 支持 `top_k`
 - 保存 score
-- 写出 debug 信息
+- 输出 debug 信息
 
-### M3: 加入记忆加工
+M3：记忆加工
 
 - extraction
 - summary
@@ -363,111 +507,109 @@ runs/longmemeval_oracle_my_memory/
 - temporal metadata
 - profile / semantic / episodic 分层
 
-### M4: 对齐评测
+M4：正式对比
 
-- 接入 `longmemeval_s_cleaned`
-- 分析 retrieval failure
-- 接入正式 LongMemEval evaluator
-- 记录不同超参数的实验配置
+- 跑 `longmemeval_s_cleaned`
+- 跑 `locomo`
+- 对比 `no_memory`、`mem0`、`amem`、`memoryos`
+- 分析 retrieval failure 和 token cost
+- 准备独立包 README、examples、pyproject，确保脱离 `agent_memory_eval` 可用
 
-## 14. 常见错误
+## 15. 常见错误
 
-### 14.1 不隔离样本
+### 15.1 不隔离样本
 
-如果不同 `question_id` 共享同一个 index，会导致信息泄漏。必须在 `reset` 中隔离。
+不同 `question_id` 共享同一 index 会造成信息泄漏。
 
-### 14.2 retrieve 返回原始对象
+### 15.2 返回原始数据库对象
 
-`retrieve` 必须返回 `list[MemoryItem]`，不要直接返回向量库或数据库原始结果。
+`retrieve` 必须返回 `list[MemoryItem]`，不要直接返回 Chroma/Qdrant/Neo4j 原始对象。
 
-### 14.3 content 太长
+### 15.3 content 太长
 
-`MemoryItem.content` 会进入 reader prompt。过长会带来成本和噪声，建议在 adapter 内控制长度或摘要。
+`MemoryItem.content` 会进入 reader prompt。过长会增加成本和噪声。
 
-### 14.4 忘记处理空检索
+### 15.4 忘记调用 `super().reset`
 
-如果没有检索结果，返回空列表即可。默认 context 会变成：
+`super().reset(sample_id)` 会重置 token tracker。忘记调用会污染 token 统计。
+
+### 15.5 backend 名称不一致
+
+这三个地方应一致：
 
 ```text
-No relevant memories retrieved.
+configs/memory/my_memory.yaml -> backend: my_memory
+configs/suites/*.yaml -> name: my_memory
+agent_memory_eval/backends/factory.py -> if backend == "my_memory"
 ```
 
-## 15. 文件命名建议
+### 15.6 把核心算法写进评测 adapter
+
+`agent_memory_eval/backends/my_memory_backend.py` 应该只是适配层。核心算法、数据结构、存储和 provider 抽象应放在独立 `your_memory` 包里。
+
+## 16. 文件命名建议
 
 假设算法名为 `HyperMemory`：
 
 ```text
-agent_memory_eval/backends/hyper_memory_backend.py
+../hyper_memory/
+  hyper_memory/
+    memory.py
+    schema.py
+    config.py
+  pyproject.toml
+
+agent_memory_eval/backends/hyper_memory_backend.py  # thin adapter
 configs/memory/hyper_memory.yaml
-configs/experiments/longmemeval_oracle_hyper_memory.yaml
-runs/longmemeval_oracle_hyper_memory/
+configs/suites/longmemeval_smoke.yaml
+configs/suites/longmemeval_s_cleaned.yaml
+configs/suites/locomo.yaml
+runs/longmemeval_smoke_hyper_memory/
 ```
 
-backend 名称建议使用小写 snake_case：
+backend 名称建议用小写 snake_case：
 
 ```yaml
 backend: hyper_memory
 ```
 
-## 16. 对外发布时的代码组织建议
+## 17. 对外发布建议
 
-本节仅供参考。后续如果要把自研 memory 算法作为独立项目发布，最终目录结构和模块边界应以实际算法开发需要为准，不必强行套用本文结构。
-
-综合当前参考项目：
-
-- `mem0` 更适合作为对外 SDK、配置系统、provider 抽象和插件化工程组织的参考。
-- `A-mem` 更适合作为研究型核心算法代码的简洁性参考。
-- `MemoryOS` 更适合作为 short / mid / long-term 分层记忆思想的模块化参考。
-
-建议优先采用 **mem0 风格的对外接口与包组织**，同时吸收 **A-mem 的算法可读性**，如果算法本身包含多层记忆，再参考 **MemoryOS 的分层模块**。
-
-一个可参考的发布结构：
+独立 memory 包建议结构：
 
 ```text
 your_memory/
   your_memory/
-    __init__.py
-    memory.py              # 对外主入口：Memory
-    schema.py              # MemoryItem / Session / Turn
-    config.py              # 配置加载
-    prompts.py
-    llms/                  # LLM provider 封装
-    embeddings/            # embedding provider 封装
-    stores/                # vector / graph / kv store 封装
-    algorithms/            # 核心 memory 算法
+    memory.py
+    schema.py
+    config.py
+    llms/
+    embeddings/
+    stores/
+    algorithms/
     adapters/
-      hypermemo.py         # 接入本评测框架
-      langchain.py         # 可选生态 adapter
-    utils/
-  examples/
-    quickstart.py
-    longmemeval_smoke.py
+      hypermemo.py
+      langchain.py
   configs/
-    default.yaml
-    dashscope.yaml
+  examples/
   tests/
-  docs/
   pyproject.toml
-  README.md
 ```
 
-推荐对外 API 保持简单：
+推荐外部 API 保持简单：
 
 ```python
 from your_memory import Memory
 
 memory = Memory.from_config("configs/default.yaml")
-
 memory.add(messages, user_id="alice")
 results = memory.search("What does Alice prefer?", user_id="alice", top_k=5)
 ```
 
-组织原则：
+Adapter 可以作为单独文件保留在评测仓库里；如果希望开源包也自带适配器，可以放在：
 
-- 对外只暴露稳定的 `Memory` 主入口，不要求用户理解内部算法细节。
-- 核心算法放在 `algorithms/`，尽量保持可读、可复现、便于写实验。
-- LLM、embedding、存储后端使用 provider 抽象，便于后续替换。
-- key 放 `.env`，模型名、base URL、top_k、存储路径放 YAML。
-- 如果算法包含短期、中期、长期记忆，可拆成明确模块，但不要让调用方必须直接操作这些模块。
-- 发布时建议同时提供 HyperMemo adapter，使算法可以直接接入 LongMemEval runner。
+```text
+your_memory/adapters/hypermemo.py
+```
 
+但这个适配器应是可选依赖，不应让普通用户安装 `agent_memory_eval` 才能使用你的 memory 包。

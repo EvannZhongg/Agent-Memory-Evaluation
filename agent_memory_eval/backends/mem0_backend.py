@@ -109,24 +109,29 @@ class Mem0Backend(MemoryBackend):
         return template.format(question_id=self.sample_id)
 
     def _build_memory_config(self, sample_id: str) -> dict[str, Any]:
-        raw = dict(self.config.get("mem0_config", {}))
+        raw = dict(self.config.get("mem0_config") or {})
         collection_template = self.config.get("collection_template")
-        if collection_template:
-            raw.setdefault("vector_store", {}).setdefault("config", {})["collection_name"] = (
-                collection_template.format(question_id=sample_id)
-            )
 
         if not raw:
             embedding_config = self.llm_config.get("embedding", {})
             llm_base_url = self.llm_config.get("base_url") or env_value(self.llm_config.get("base_url_env"))
+            llm_chat_base_url = (
+                self.config.get("chat_base_url")
+                or env_value(self.config.get("chat_base_url_env"))
+                or self.llm_config.get("chat_base_url")
+                or _responses_to_chat_base_url(llm_base_url)
+                or llm_base_url
+            )
             embedding_base_url = embedding_config.get("base_url") or env_value(embedding_config.get("base_url_env"))
+            llm_api_key = env_value(self.llm_config.get("api_key_env", "LLM_API_KEY"))
+            embedding_api_key = env_value(embedding_config.get("api_key_env", "EMBEDDING_API_KEY")) or llm_api_key
             raw = {
                 "llm": {
                     "provider": self.config.get("llm_provider", "openai"),
                     "config": {
                         "model": self.config.get("llm_model") or self.llm_config.get("model", "gpt-4o-mini"),
-                        "api_key": env_value(self.llm_config.get("api_key_env", "LLM_API_KEY")),
-                        "openai_base_url": llm_base_url,
+                        "api_key": llm_api_key,
+                        "openai_base_url": llm_chat_base_url,
                     },
                 },
                 "embedder": {
@@ -134,7 +139,7 @@ class Mem0Backend(MemoryBackend):
                     "config": {
                         "model": self.config.get("embedding_model")
                         or embedding_config.get("model", "text-embedding-3-small"),
-                        "api_key": env_value(embedding_config.get("api_key_env", "EMBEDDING_API_KEY")),
+                        "api_key": embedding_api_key,
                         "openai_base_url": embedding_base_url,
                     },
                 },
@@ -148,6 +153,10 @@ class Mem0Backend(MemoryBackend):
                     },
                 },
             }
+        if collection_template:
+            raw.setdefault("vector_store", {}).setdefault("config", {})["collection_name"] = (
+                collection_template.format(question_id=sample_id)
+            )
         return raw
 
 
@@ -156,3 +165,15 @@ def _float_or_none(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _responses_to_chat_base_url(base_url: str | None) -> str | None:
+    if not base_url:
+        return None
+    dashscope_responses = "https://dashscope.aliyuncs.com/api/v2/apps/protocols/compatible-mode/v1"
+    if base_url.rstrip("/") == dashscope_responses:
+        return "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    marker = "/api/v2/apps/protocols/compatible-mode/v1"
+    if marker in base_url:
+        return base_url.replace(marker, "/compatible-mode/v1")
+    return None
