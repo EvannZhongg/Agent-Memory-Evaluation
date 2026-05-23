@@ -43,7 +43,6 @@ C-HyperMem/
 # External comparison repos and benchmark mirrors kept locally for analysis.
 # Do not vendor these unless you intentionally want to track a fixed fork.
 Memory-in-the-LLM-Era-main/
-# locomo/
 
 # Optional local clones. These directories are currently tracked in this repo,
 # so they are not ignored here. If you later externalize them, uncomment the
@@ -75,15 +74,6 @@ LongMemEval/generation_logs/
 LongMemEval/index_expansion_logs/
 LongMemEval/**/*.eval-results-*
 LongMemEval/**/*.log
-
-# LOCOMO full dataset mirror and generated artifacts.
-# Keep only configs pointing to local paths; users download/copy data separately.
-locomo/data/
-locomo/**/*.json
-locomo/**/*.jsonl
-locomo/**/*.pkl
-locomo/**/__pycache__/
-locomo/static/
 
 # Imported memory project generated artifacts
 A-mem/**/.chromadb/

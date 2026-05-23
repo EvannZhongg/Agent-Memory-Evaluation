@@ -53,7 +53,7 @@ LOCOMO suite 默认读取：
 locomo/data/locomo10.json
 ```
 
-`locomo/` 整体默认被 `.gitignore` 忽略，需要本地 clone/copy。这样可以避免把数据集、静态站点资源和生成缓存放进评测框架仓库。
+`locomo/` 可以随仓库提交和更新；如果后续数据体积继续增大，再单独把大文件迁到外部数据下载流程。
 
 ## 环境准备
 
@@ -329,7 +329,6 @@ LongMemEval/data/longmemeval_s_cleaned_smoke_1.json
 runs/
 C-HyperMem/
 Memory-in-the-LLM-Era-main/
-locomo/
 参考文献/
 LongMemEval/data/longmemeval_*.json  # smoke fixture 除外
 各类 vectorstores / chroma / sqlite / cache
@@ -342,15 +341,19 @@ LongMemEval/data/longmemeval_*.json  # smoke fixture 除外
 目标仓库：
 
 ```text
-https://github.com/EvannZhongg/HyperMemo.git
+https://github.com/EvannZhongg/Agent-Memory-Evaluation.git
 ```
 
 如果本地已经初始化过 git，只需要：
 
 ```powershell
-git remote add origin https://github.com/EvannZhongg/HyperMemo.git
-git branch -M main
-git push -u origin main
+git status
+
+git add .
+git commit -m "你的提交说明"
+
+git pull --rebase origin main
+git push origin main
 ```
 
 ## 下载 LongMemEval 数据集
