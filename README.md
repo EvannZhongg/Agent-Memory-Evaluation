@@ -2,6 +2,8 @@
 
 一个用于评测 agent memory 系统的统一实验框架。它使用 LongMemEval 作为统一输入协议，对比不同 memory backend 在长期对话记忆任务中的写入、检索、回答和 token 成本。
 
+后续benchmark的输入协议可以视情况而定改为更统一的形式，而不是依赖 LongMemEval。
+
 当前支持的 backend：
 
 - `none`：无记忆 baseline
